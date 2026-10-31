@@ -91,3 +91,10 @@ button.p{background:var(--lime);border-color:var(--lime);color:#090b06}
 .hm{padding:16px 10px}.hm table{border-spacing:3px}
 .hm td.c{width:20px;height:16px}.hm th{width:20px;font-size:6.5px;letter-spacing:0}
 .hm td.n{padding-right:6px;font-size:11px}.hm td.n .mk{margin-right:6px}.hm td.sc{padding-left:6px}}
+
+/* cable map */
+svg.cm{display:block;width:100%;max-width:720px;margin:0 auto}
+.cm line{stroke:var(--okm);stroke-width:1}.cm line.warn{stroke:var(--amber)}
+.cm line.fail{stroke:var(--red);stroke-dasharray:4 4;animation:alarm 1s ease-in-out infinite}
+.cm rect{fill:var(--raise);stroke:var(--line2)}.cm rect.sw{stroke:var(--okm)}
+.cm text{font:11px var(--mono);fill:var(--ink);text-anchor:middle}

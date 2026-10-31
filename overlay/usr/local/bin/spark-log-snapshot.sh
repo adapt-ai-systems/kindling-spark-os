@@ -38,6 +38,11 @@ docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' \
     2>&1 || echo "(systemctl failed)"
 } | atomic "$LOGDIR/systemd-units.log"
 
+# What each fabric port is cabled to, for the Cables tab. lldpcli is setuid
+# _lldpd and runs for root and the adm group only, so the agent cannot ask
+# lldpd itself.
+lldpctl -f json0 2>&1 | atomic "$LOGDIR/lldp.json"
+
 # --tail bounds the read: docker seeks the end rather than streaming the whole
 # file, so this costs the same whether the log is 1 MB or 1 GB.
 for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do

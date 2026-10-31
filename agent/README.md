@@ -9,10 +9,12 @@ through the mentat router with `__group=agent-<hostname>`.
   cannot read directly comes from the files `spark-log-snapshot.sh` writes under `/var/log/spark`.
 - `spark-memory.py`: accounts for every byte of host memory, including the GPU's share, which
   process RSS does not show. The agent and the snapshot timer both run it.
-- `panels/`: the pages, one module per tab (Cluster, Health, Power), drawn in one shared shell.
-  `panels/__init__.py` says what a module defines; to add a tab, write one and list it in `ORDER`.
-  Health runs the checks in `panels/checks.py`, one function per column, on its own node and
-  publishes them in `/status.json`, so any node's page shows the whole fleet.
+- `panels/`: the pages, one module per tab (Cluster, Health, Cables, Power), drawn in one shared
+  shell. `panels/__init__.py` says what a module defines; to add a tab, write one and list it in
+  `ORDER`. Health runs the checks in `panels/checks.py`, one function per column, on its own node and
+  publishes them in `/status.json`, so any node's page shows the whole fleet. Cables does the same
+  with each port's LLDP neighbour (from `lldp.json`, which the snapshot saves) and PHY counters,
+  and pairs the ends into one row per cable.
 
 It needs no settings. The page and the `models` tool read every node and model from the box's own
 mentatd, and the agent answers loopback and the box's own subnets, leaving out container bridges.
