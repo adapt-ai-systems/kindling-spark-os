@@ -18,17 +18,19 @@ and it runs without that. Prototype on a spare port with:
     python3 spark-agent.py --port 8090
 """
 import argparse
+import concurrent.futures
 import ipaddress
 import json
 import os
-import shutil
-import socket
 import subprocess
 import threading
 import time
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import panels
+from panels.common import HOSTNAME, read_file, run
 
 
 class Server(ThreadingHTTPServer):
@@ -46,7 +48,6 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 1024
     daemon_threads = True
 
-HOSTNAME = socket.gethostname()
 STARTED = time.time()
 LOG_DIR = os.environ.get("AGENT_LOG_DIR", "/logs")
 AGENT_PORT = int(os.environ.get("AGENT_PORT", "8090"))
@@ -67,27 +68,6 @@ MENTAT_ROUTER_URL = os.environ.get("MENTAT_ROUTER_URL", "")
 # How often mentatd and the engines are read. Token rates are differenced
 # across this interval, so it also sets how twitchy the numbers look.
 LOAD_INTERVAL_S = float(os.environ.get("LOAD_INTERVAL_S", "5"))
-
-
-def run(cmd: list[str], timeout: float = 15) -> str:
-    """Combined stdout and stderr, or a line saying why there is none."""
-    if not shutil.which(cmd[0]):
-        return f"({cmd[0]} is not installed on {HOSTNAME})"
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return f"({' '.join(cmd)} timed out after {timeout}s)"
-    except OSError as e:
-        return f"({' '.join(cmd)} failed: {type(e).__name__}: {e})"
-    return (r.stdout or "") + (r.stderr or "")
-
-
-def read_file(path: str) -> str:
-    try:
-        with open(path) as f:
-            return f.read()
-    except OSError as e:
-        return f"({path}: {type(e).__name__}: {e})"
 
 
 def cap(text: str, limit: int = MAX_BYTES) -> str:
@@ -454,7 +434,8 @@ def read_driver_errors() -> dict:
     if not total and newest is None:
         return {}
     return {"total": total, "recent": recent, "sample": sample,
-            "last_s": round(now - newest) if newest else None}
+            "last_s": round(now - newest) if newest else None,
+            "window_s": DRIVER_ERR_WINDOW_S}
 
 
 
@@ -470,6 +451,12 @@ MENTAT_DAEMON = os.environ.get("MENTAT_DAEMON", "127.0.0.1:6379")
 # Short, because one loop reads mentatd, every peer agent and every engine
 # in turn, and a dead node should cost a round seconds, not minutes.
 FETCH_TIMEOUT_S = 2.0
+# Optional: every box in the fleet, as "name=address,..." (the name may be
+# left out). mentat lists only this node's own cluster, so without this a page
+# sees that cluster alone. With it, the per-box pages show these boxes, in
+# this order, under these names.
+FLEET = [(n if a else "", a or n) for n, _, a in (
+    e.strip().partition("=") for e in os.environ.get("SPARK_FLEET", "").split(",") if e.strip())]
 
 
 def register_loop():
@@ -582,24 +569,58 @@ def cluster_from_status(st: dict, head: dict | None = None) -> dict:
 
 
 def read_nodes(daemons: dict) -> dict[str, dict]:
-    """daemon address -> that node's agent status, or why there is none.
+    """address -> that node's agent status, or why there is none.
 
     mentat knows nothing of the interlink or the driver, so each node's agent
-    is asked for its own.
+    is asked for its own. The mentat daemons carry `connected`; the boxes of
+    the fleet list carry their `rank` in it and their name.
     """
     out = {}
     for addr, d in sorted(daemons.items()):
         ip = addr.rsplit(":", 1)[0]
-        entry = {"ip": ip, "addrs": [ip] + [a.rsplit(":", 1)[0]
-                                            for a in d.get("alternates") or []],
-                 "connected": bool(d.get("connected")),
-                 "daemon_error": d.get("error")}
+        out[addr] = {"ip": ip, "addrs": [ip] + [a.rsplit(":", 1)[0]
+                                                for a in d.get("alternates") or []],
+                     "connected": bool(d.get("connected")),
+                     "daemon_error": d.get("error")}
+    for rank, (name, ip) in enumerate(FLEET):
+        out[f"fleet:{ip}"] = {"ip": ip, "addrs": [ip], "rank": rank, "alias": name}
+
+    def fetch(entry):
         try:
-            entry["agent"] = _get_json(f"http://{ip}:{LISTEN_PORT}/status.json")
+            entry["agent"] = _get_json(f"http://{entry['ip']}:{LISTEN_PORT}/status.json")
         except Exception as e:
             entry["agent_error"] = f"{type(e).__name__}: {e}"
-        out[addr] = entry
+
+    # At the same time, so a box that does not answer delays none of the others.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(fetch, out.values()))
     return out
+
+
+def view() -> dict:
+    """Everything a panel draws from: see panels/__init__.py."""
+    snap = cluster_snapshot()
+    with _load_lock:
+        load, load_err = dict(_load), dict(_load_err)
+    return {"host": HOSTNAME, "port": LISTEN_PORT, "router": MENTAT_ROUTER_URL,
+            "mentat": snap["mentat"], "mentat_error": snap["mentat_error"],
+            "nodes": snap["nodes"], "load": load, "load_err": load_err}
+
+
+# Each panel's last sample() of this node, by panel name, served in
+# /status.json for the other nodes' pages.
+_samples: dict[str, dict] = {}
+
+
+def sample_loop():
+    while True:
+        for p in panels.PANELS:
+            if hasattr(p, "sample"):
+                try:
+                    _samples[panels.name(p)] = p.sample(view())
+                except Exception as e:
+                    _samples[panels.name(p)] = {"error": f"{type(e).__name__}: {e}"}
+        time.sleep(panels.SAMPLE_S)
 
 
 def watch_cluster():
@@ -667,156 +688,6 @@ def sample_load(name: str, url: str):
 
 
 
-# --- GPU power: a clock cap ------------------------------------------------
-# GB10 has no power limit: nvidia-smi reports every limit as N/A. The box's
-# power is held down by capping the SM clock instead. The agent only writes
-# the wanted cap to CAP_FILE; sparkos-gpucap (root, started by a .path unit)
-# applies it and leaves its result in CAP_STATUS. /etc/spark is copied from
-# the DGX OS disk at boot, so a cap persists.
-CAP_FILE = "/etc/spark/gpucap/mhz"
-CAP_STATUS = "/run/spark/gpucap.status"
-
-
-def read_power() -> dict:
-    """This node's live clock, load and the cap as wanted and as applied."""
-    out: dict = {"cap_mhz": 0, "applied": None}
-    q = run(["nvidia-smi", "--query-gpu=clocks.sm,clocks.max.sm,utilization.gpu,"
-             "power.draw,temperature.gpu", "--format=csv,noheader,nounits"], 10)
-    parts = [x.strip() for x in q.strip().splitlines()[-1].split(",")] if q.strip() else []
-    if len(parts) == 5 and not q.startswith("error"):
-        def num(v):
-            try:
-                return float(v)
-            except ValueError:
-                return None
-        out.update(sm_mhz=num(parts[0]), max_mhz=num(parts[1]), util_pct=num(parts[2]),
-                   watts=num(parts[3]), temp_c=num(parts[4]))
-    else:
-        out["error"] = q.strip()[:200]
-    try:
-        with open(CAP_FILE) as f:
-            out["cap_mhz"] = int("".join(c for c in f.read() if c.isdigit()) or 0)
-    except OSError:
-        pass
-    try:
-        with open(CAP_STATUS) as f:
-            st = json.load(f)
-        out["applied"] = bool(st.get("applied")) and st.get("cap_mhz") == out["cap_mhz"]
-        out["applied_at"] = st.get("at")
-        if st.get("error"):
-            out["apply_error"] = st["error"]
-    except (OSError, ValueError):
-        pass
-    return out
-
-
-def set_cap(mhz: int) -> dict:
-    """Write the wanted cap (0 clears it) and wait briefly for the root unit."""
-    mhz = int(mhz)
-    if mhz < 0:
-        raise ValueError("cap must be 0 (clear) or a positive MHz figure")
-    mx = read_power().get("max_mhz")
-    if mhz and mx and mhz > mx:
-        raise ValueError(f"cap {mhz} MHz is above this GPU's maximum {mx:.0f}")
-    if mhz and mhz < 100:
-        raise ValueError("cap below 100 MHz refused")
-    tmp = CAP_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(f"{mhz}\n")
-    os.replace(tmp, CAP_FILE)         # one inotify event for the .path unit
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        p = read_power()
-        if p.get("applied") is not None and p.get("applied_at") and p["cap_mhz"] == mhz:
-            if p["applied"] or p.get("apply_error"):
-                return p
-        time.sleep(0.3)
-    return read_power()
-
-
-def t_power_cap(mhz: int = -1, **_):
-    if mhz is None or int(mhz) < 0:
-        return json.dumps(read_power(), indent=2)
-    try:
-        return json.dumps(set_cap(int(mhz)), indent=2)
-    except (ValueError, OSError) as e:
-        return json.dumps({"error": str(e), **read_power()}, indent=2)
-
-
-def _power_row(name: str, ip: str, p: dict, self_node: bool) -> str:
-    link = f"<a href=\"http://{_esc(ip)}:{LISTEN_PORT}/power\">{_esc(name)}</a>"
-    if self_node:
-        link += "<span class=self>this node</span>"
-    if not p:
-        return f"<tr><td>{link}</td><td colspan=5><span class=\"pill bad\">no agent</span></td></tr>"
-    def f(k, fmt="{:.0f}"):
-        v = p.get(k)
-        return fmt.format(v) if isinstance(v, (int, float)) else _DIM_DASH
-    util = p.get("util_pct") if isinstance(p.get("util_pct"), (int, float)) else None
-    if util is None:
-        utilcell = _DIM_DASH
-    else:
-        utilcell = (f"<span class=\"bar{' hot' if util >= 90 else ''}\"><i style=\"width:{util:.0f}%\"></i></span>"
-                    f"{util:.0f}%")
-    cap = p.get("cap_mhz") or 0
-    if cap:
-        state = ("<span class=\"pill ok\">applied</span>" if p.get("applied") else
-                 f"<span class=\"pill bad\">{_esc(p.get('apply_error') or 'not applied')}</span>")
-        capcell = f"{cap} MHz {state}"
-    else:
-        capcell = "<span class=\"pill dim\">none</span>"
-    return (f"<tr><td>{link}</td><td class=num>{f('sm_mhz')} <span class=dim>/ {f('max_mhz')}</span></td>"
-            f"<td class=num>{utilcell}</td><td class=num>{f('watts', '{:.1f}')} W</td>"
-            f"<td class=num>{f('temp_c')} &deg;C</td><td class=num>{capcell}</td></tr>")
-
-
-def power_page(msg: str = "") -> bytes:
-    snap = cluster_snapshot()
-    rows = []
-    for n in snap.get("nodes", {}).values():
-        agent = n.get("agent") or {}
-        name = agent.get("node") or n["ip"]
-        rows.append(_power_row(name, n["ip"], agent.get("power") or {}, name == HOSTNAME))
-    me = read_power()
-    note = f"<div class=msg>{_esc(msg)}</div>" if msg else ""
-    mx = int(me.get("max_mhz") or 3000)
-    def num(k, fmt="{:.0f}", unit=""):
-        v = me.get(k)
-        return (fmt.format(v) + unit) if isinstance(v, (int, float)) else "-"
-    cap = me.get("cap_mhz") or 0
-    capnow = f"{cap} MHz" if cap else "none"
-    html = f"""<!doctype html><html lang=en><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>spark power</title><style>{_CSS}</style>
-<div class=wrap>
-<header class=top><h1>Spark power</h1><span class=from>seen from {_esc(HOSTNAME)}</span>
-<nav><a href="/">cluster</a><a href="/power" class=here>power</a><a href="/status.json">status.json</a></nav></header>
-<p class=lead>GB10 has no power limit, so the cap is the SM clock's maximum. A cap set here survives a reboot.
-The live clock sits next to the cap, so a cap that did not take shows.</p>
-{note}
-<h2>this node</h2>
-<div class=card>
-<div class=stats>
-<div class=stat><b>{num('sm_mhz')}</b><small>SM MHz of {mx}</small></div>
-<div class=stat><b>{num('util_pct', '{:.0f}', '%')}</b><small>util</small></div>
-<div class=stat><b>{num('watts', '{:.1f}', ' W')}</b><small>draw</small></div>
-<div class=stat><b>{num('temp_c', '{:.0f}', '&deg;')}</b><small>temp</small></div>
-<div class=stat><b>{capnow}</b><small>cap</small></div>
-</div>
-<form class=cap method=post action="/power">
-<label for=cap>cap</label><input id=cap type=number name=cap min=100 max={mx} step=1 value="{cap or ''}"
-placeholder="none"><label>MHz, max {mx}</label>
-<button type=submit>Set cap</button>
-<button type=submit name=clear value=1 class=ghost>Clear</button>
-</form>
-</div>
-<h2>fleet</h2>
-<div class="card scroll"><table><thead><tr><th>node</th><th>SM clock / max</th><th>util</th><th>draw</th><th>temp</th><th>cap</th></tr></thead>
-<tbody>{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</tbody></table></div>
-<footer>per-node figures from each node's agent</footer>
-</div>"""
-    return html.encode()
-
 TOOLS = {
     "meminfo": (t_meminfo, "Raw /proc/meminfo.", {}),
     "gpu": (t_gpu, "nvidia-smi output. Pick a view with args: '' for the "
@@ -855,191 +726,10 @@ TOOLS = {
     "models": (t_models, "mentat's table of every group, model and node, read "
                "from the mesh head, with the token load this agent scraped "
                "from each engine.", {}),
-    "power_cap": (t_power_cap, "This node's GPU clock, load, draw and clock cap. "
-                  "With mhz: set the cap (0 clears it); GB10 has no power limit, "
-                  "so the SM clock cap is the power cap. Persists across reboots.",
-                  {"mhz": {"type": "integer"}}),
+    **panels.tools(),
 }
 
 
-
-
-# --- cluster page -----------------------------------------------------------
-# Every daemon holds the same cluster, so any node can draw it and there is
-# no page that only one node can serve.
-_CSS = """:root{--bg:#04040c;--surface:#0a0b18;--surface2:#111225;--border:#1c1e38;--border2:#2e3156;
---ink:#e9ebf8;--dim:#9ba1c6;--meta:#676e97;--accent:#5ee6ff;--ok:#59ffb5;--bad:#ff4d6b;--warn:#ffd166;
---sans:-apple-system,"SF Pro Text",ui-sans-serif,system-ui,sans-serif;--mono:"SF Mono",ui-monospace,Menlo,monospace}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);
-background-image:radial-gradient(ellipse 80% 50% at 78% -10%,rgba(94,230,255,.07),transparent 60%)}
-.wrap{max-width:62rem;margin:0 auto;padding:1.6rem 1.2rem 3rem}
-header.top{display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap;margin-bottom:1.2rem}
-header.top h1{font-size:1.05rem;font-weight:600;letter-spacing:.02em;margin:0}
-header.top .from{color:var(--meta);font-size:.85rem}
-header.top nav{margin-left:auto;display:flex;gap:1rem;font-size:.85rem}
-header.top nav a{color:var(--dim);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:1px}
-header.top nav a:hover,header.top nav a.here{color:var(--accent);border-color:var(--accent)}
-h1{font-size:1.05rem;font-weight:600}h2{font-size:.72rem;font-weight:600;letter-spacing:.14em;
-text-transform:uppercase;color:var(--meta);margin:1.8rem 0 .6rem}
-p{margin:.4rem 0}.lead{color:var(--dim);font-size:.9rem;max-width:48rem}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem 1.1rem;
-box-shadow:0 8px 24px rgba(0,0,0,.35)}
-table{border-collapse:collapse;width:100%}
-th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--border);vertical-align:middle}
-tr:last-child td{border-bottom:0}
-th{color:var(--meta);font-weight:500;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase}
-tbody tr:hover td{background:rgba(94,230,255,.03)}
-td.num,.num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:.9rem}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--meta)}
-.self{display:inline-block;margin-left:.5rem;padding:.05rem .45rem;border:1px solid var(--border2);
-border-radius:999px;color:var(--dim);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase}
-.pill{display:inline-block;padding:.1rem .55rem;border-radius:999px;font-size:.78rem;border:1px solid}
-.pill.ok{border-color:rgba(89,255,181,.35);background:rgba(89,255,181,.08)}
-.pill.bad{border-color:rgba(255,77,107,.4);background:rgba(255,77,107,.1)}
-.pill.dim{border-color:var(--border);color:var(--meta)}
-.bar{position:relative;height:6px;width:5.5rem;background:var(--border);border-radius:3px;overflow:hidden;
-display:inline-block;vertical-align:middle;margin-right:.5rem}
-.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px}
-.bar.hot i{background:var(--warn)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(7.5rem,1fr));gap:.8rem;margin:.2rem 0 1rem}
-.stat{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem}
-.stat b{display:block;font:600 1.25rem/1.2 var(--mono);font-variant-numeric:tabular-nums}
-.stat small{display:block;color:var(--meta);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;margin-top:.15rem}
-form.cap{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
-form.cap label{color:var(--dim);font-size:.9rem}
-input[type=number]{width:7.5rem;background:var(--bg);color:var(--ink);border:1px solid var(--border2);
-border-radius:6px;padding:.4rem .6rem;font:600 .95rem var(--mono)}
-input[type=number]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(94,230,255,.15)}
-button{background:var(--accent);color:#04040c;border:0;border-radius:6px;padding:.45rem .95rem;
-font:600 .85rem var(--sans);cursor:pointer}
-button.ghost{background:transparent;color:var(--dim);border:1px solid var(--border2)}
-button.ghost:hover{color:var(--ink);border-color:var(--accent)}
-.msg{margin:.6rem 0 1rem;padding:.55rem .8rem;border-radius:8px;font-size:.9rem;
-border:1px solid rgba(255,77,107,.4);background:rgba(255,77,107,.08);color:var(--bad)}
-footer{margin-top:1.6rem;color:var(--meta);font-size:.8rem}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:38rem}.scroll td,.scroll th{white-space:nowrap}
-.scroll th:first-child,.scroll td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
-@media(max-width:640px){.wrap{padding:1rem .8rem 2rem}.card{padding:.8rem}th,td{padding:.5rem .5rem}
-.bar{width:3.2rem}header.top nav{margin-left:0;width:100%}}"""
-_DIM_DASH = "<span class=dim>-</span>"
-
-
-def _esc(v) -> str:
-    return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-
-def _driver_cell(dv: dict) -> str:
-    # A fault inside the window is the alarm. Older ones stay visible but dim,
-    # because the count never resets short of a reboot.
-    if dv.get("recent"):
-        return (f"<span class=bad title=\"{_esc(dv.get('sample') or '')}\">"
-                f"{dv['recent']} in {DRIVER_ERR_WINDOW_S // 60}m</span>")
-    if dv.get("total"):
-        return f"<span class=dim>{dv['total']} earlier</span>"
-    return _DIM_DASH
-
-
-def cluster_page() -> bytes:
-    snap = cluster_snapshot()
-    groups = (snap.get("mentat") or {}).get("groups") or {}
-    with _load_lock:
-        loads = dict(_load)
-        load_errs = dict(_load_err)
-
-    # An engine URL names an address. Map each address back to the node that
-    # holds it, so the models table can say where a model runs.
-    by_ip: dict[str, str] = {}
-    for n in snap.get("nodes", {}).values():
-        name = (n.get("agent") or {}).get("node") or n["ip"]
-        for a in n["addrs"]:
-            by_ip[a] = name
-
-    def node_of(url: str | None) -> str:
-        host = urllib.parse.urlsplit(url or "").hostname or ""
-        return by_ip.get(host, host or "?")
-
-    served = {}
-    for g in groups.values():
-        if g.get("openai"):
-            n = node_of(g["openai"])
-            served[n] = served.get(n, 0) + 1
-
-    rows = []
-    for n in snap.get("nodes", {}).values():
-        agent = n.get("agent") or {}
-        name = agent.get("node") or n["ip"]
-        link = (f"<a href=\"http://{_esc(n['ip'])}:{LISTEN_PORT}/\" "
-                f"style=\"color:#9ad\">{_esc(name)}</a>")
-        if name == HOSTNAME:
-            link += " <span class=self>this node</span>"
-        mentat = ("<span class=ok>connected</span>" if n["connected"] else
-                  f"<span class=bad>{_esc(n.get('daemon_error') or 'down')}</span>")
-        if "agent" in n:
-            ic = agent.get("interconnect") or {}
-            ics = (f"{ic['tx_mbs']:.0f}/{ic['rx_mbs']:.0f} MB/s"
-                   if ic else _DIM_DASH)
-            drv = _driver_cell(agent.get("driver") or {})
-        else:
-            ics = f"<span class=bad title=\"{_esc(n.get('agent_error'))}\">no agent</span>"
-            drv = _DIM_DASH
-        rows.append(
-            f"<tr><td>{link}</td><td>{_esc(', '.join(n['addrs']))}</td>"
-            f"<td>{mentat}</td><td>{ics}</td><td>{drv}</td>"
-            f"<td>{served.get(name, 0)}</td></tr>")
-
-    models = []
-    for name, g in sorted(groups.items()):
-        if not g.get("openai"):
-            continue                    # agents and other MCP-only groups
-        why_not = g.get("why_not") or load_errs.get(name)
-        healthy = not why_not and name in loads
-        ld = loads.get(name) or {}
-        if "gen_tps" in ld:
-            # Prompt and generation are separate on purpose: a long prefill
-            # shows as prompt tokens with generation at zero, which is the
-            # difference between a busy engine and a stalled one.
-            tps = f"{ld['prompt_tps']:.0f} in / {ld['gen_tps']:.0f} out"
-        elif ld:
-            tps = "<span class=dim>warming</span>"
-        else:
-            tps = _DIM_DASH
-        q = f"{ld['running']}/{ld['waiting']}" if ld else _DIM_DASH
-        kv = f"{ld['kv']:.0f}%" if ld else _DIM_DASH
-        models.append(
-            f"<tr><td>{_esc(', '.join(g.get('models') or [name]))}</td>"
-            f"<td>{_esc(name)}</td><td>{_esc(node_of(g['openai']))}</td>"
-            f"<td class={'ok' if healthy else 'bad'}>"
-            f"{'healthy' if healthy else _esc(why_not or 'not read yet')}</td>"
-            f"<td>{tps}</td><td>{q}</td><td>{kv}</td>"
-            f"<td class=dim>{_esc(g['openai'])}</td></tr>")
-
-    err = snap.get("mentat_error")
-    mentat_note = (f"<p class=bad>mentatd unreachable: {_esc(err)}</p>" if err else "")
-    empty = "mentatd unreachable" if err else "none registered"
-    router = (f"&middot; routed by <a href=\"{_esc(MENTAT_ROUTER_URL)}/\">"
-              f"{_esc(MENTAT_ROUTER_URL)}</a>\n" if MENTAT_ROUTER_URL else "")
-    html = f"""<!doctype html><meta charset=utf-8>
-<meta http-equiv=refresh content=10>
-<title>spark cluster</title><style>{_CSS}</style>
-<div class=wrap>
-<header class=top><h1>Spark cluster</h1><span class=from>seen from {_esc(HOSTNAME)}</span>
-<nav><a href="/" class=here>cluster</a><a href="/power">power</a><a href="/status.json">status.json</a></nav></header>
-{mentat_note}
-<h2>nodes</h2>
-<div class="card scroll"><table><tr><th>node</th><th>addresses</th><th>mentatd</th>
-<th>interlink tx/rx</th><th>driver faults</th><th>models</th></tr>
-{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</table></div>
-<h2>models</h2>
-<div class="card scroll"><table><tr><th>model</th><th>group</th><th>node</th><th>state</th>
-<th>tokens/s</th><th>run/wait</th><th>kv</th>
-<th>serving</th></tr>{''.join(models) or f'<tr><td colspan=8 class=dim>{empty}</td></tr>'}</table></div>
-<footer>from this node's mentatd
-{router}&middot; refreshes every 10s
-&middot; <a href="/status.json">status.json</a></footer>
-</div>"""
-    return html.encode()
 
 
 # --- who may ask ------------------------------------------------------------
@@ -1133,12 +823,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self._deny_source():
             return
-        path = self.path.rstrip("/") or "/"
-        if path == "/":
-            self._send(200, cluster_page(), "text/html; charset=utf-8")
-            return
-        if path == "/power":
-            self._send(200, power_page(), "text/html; charset=utf-8")
+        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        panel = panels.by_path(path)
+        if panel:
+            self._send(200, panels.render(panel, view()), "text/html; charset=utf-8")
             return
         if path in ("/healthz", "/status.json"):
             # Peer agents read this for the node table, so it carries this
@@ -1148,7 +836,7 @@ class Handler(BaseHTTPRequestHandler):
                 "group": MENTAT_GROUP, "tools": sorted(TOOLS),
                 "interconnect": read_interconnect(),
                 "driver": read_driver_errors(),
-                "power": read_power(),
+                **_samples,
             }, indent=2).encode(), "application/json")
             return
         self._send(404, b"not found\n", "text/plain")
@@ -1159,15 +847,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/") or "/"
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
-        if path == "/power":
-            form = urllib.parse.parse_qs(raw.decode(errors="replace"))
-            want = 0 if form.get("clear") else int((form.get("cap") or ["0"])[0] or 0)
-            try:
-                set_cap(want)
-                msg = ""
-            except (ValueError, OSError) as e:
-                msg = str(e)
-            self._send(200, power_page(msg), "text/html; charset=utf-8")
+        panel = panels.by_path(path)
+        if panel and hasattr(panel, "post"):
+            msg = panel.post(urllib.parse.parse_qs(raw.decode(errors="replace")))
+            self._send(200, panels.render(panel, view(), msg), "text/html; charset=utf-8")
             return
         try:
             payload = json.loads(raw.decode() or "{}")
@@ -1221,6 +904,7 @@ def main():
     LISTEN_PORT = a.port
     threading.Thread(target=watch_cluster, daemon=True).start()
     threading.Thread(target=register_loop, daemon=True).start()
+    threading.Thread(target=sample_loop, daemon=True).start()
     srv = Server((a.bind, a.port), Handler)
     print(f"spark-agent on {a.bind}:{a.port} as {HOSTNAME}, group "
           f"{MENTAT_GROUP}, {len(TOOLS)} tools, logs at {LOG_DIR}", flush=True)

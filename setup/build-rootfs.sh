@@ -50,6 +50,7 @@ install -m755 "$K/mentatd/mentatd" "$K/mentatd/mentatd-probe-machine" "$stage/us
 install -m755 "$K/agent/spark-memory.py" "$stage/usr/local/bin/"
 install -d "$stage/opt/spark-agent" && cp -a "$K/agent/lib" "$stage/opt/spark-agent/lib"
 install -m755 "$K/agent/spark-agent.py" "$stage/opt/spark-agent/"
+install -Dm644 -t "$stage/opt/spark-agent/panels" "$K"/agent/panels/*.py "$K/agent/panels/style.css"
 install -d "$stage/opt/kindling/dispram"
 cp -a "$K/dispram/." "$stage/opt/kindling/dispram/"
 cp -a "$K/stack/stack.env" "$stage/etc/kindling/stack.env"
