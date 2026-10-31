@@ -494,6 +494,8 @@ def _get_json(url: str) -> dict:
 # agent reported about itself.
 _cluster: dict = {"mentat": None, "mentat_error": "not read yet", "nodes": {}}
 _cluster_lock = threading.Lock()
+# Set once the first read is in, so a page or sample never draws an empty fleet.
+_cluster_read = threading.Event()
 
 
 def cluster_snapshot() -> dict:
@@ -613,6 +615,7 @@ _samples: dict[str, dict] = {}
 
 
 def sample_loop():
+    _cluster_read.wait(30)
     while True:
         for p in panels.PANELS:
             if hasattr(p, "sample"):
@@ -642,6 +645,7 @@ def watch_cluster():
         nodes = read_nodes((mentat or {}).get("daemons") or {})
         with _cluster_lock:
             _cluster.update(mentat=mentat, mentat_error=err, nodes=nodes)
+        _cluster_read.set()
         groups = (mentat or {}).get("groups") or {}
         for name, g in groups.items():
             if g.get("openai"):

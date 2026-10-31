@@ -44,7 +44,7 @@ def results(box: dict) -> list:
             (label, "na", "no reply from the agent") for label, _ in COLUMNS[1:]]
     h = st.get("health")
     if not h:
-        why, state = "this agent has no Health checks: an older image", "na"
+        why, state = "no results: the agent just started, or it predates Health", "na"
     elif "error" in h:
         why, state = f"the checks did not run: {h['error']}", "fail"
     else:

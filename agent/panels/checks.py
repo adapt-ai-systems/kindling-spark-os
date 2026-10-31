@@ -32,6 +32,7 @@ MTU_FLOOR = 4200                        # RoCE needs a 4096 RDMA MTU; above that
 SYMBOL_RATE_WARN = 50000                # corrected symbols/s on a lane: pre-FEC BER ~1e-6
 PEER_TRIES = 10                         # loss and the median round trip cover this many samples
 PEER_SLOW_MS = 1.0
+PEER_MIN_TRIES = 3                      # judge the round trip only from this many samples on
 
 # ethtool -S counters on each fabric port.
 PHY_FAIL = ("rx_crc_errors_phy", "rx_pcs_symbol_err_phy", "rx_symbol_err_phy", "tx_errors_phy")
@@ -323,7 +324,7 @@ def c_peers(f):
             bad.append(f"no answer from {to}")
         elif p["answered"] < p["tries"]:
             bad.append(f"{100 - 100 * p['answered'] // p['tries']}% lost to {to}")
-        elif p["ms"] > PEER_SLOW_MS:
+        elif p["tries"] >= PEER_MIN_TRIES and p["ms"] > PEER_SLOW_MS:
             warn.append(f"{p['ms']:.2f} ms to {to}")
     if bad:
         return "fail", "; ".join(bad + warn)
