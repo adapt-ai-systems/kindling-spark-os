@@ -33,6 +33,7 @@ SYMBOL_RATE_WARN = 50000                # corrected symbols/s on a lane: pre-FEC
 PEER_TRIES = 10                         # loss and the median round trip cover this many samples
 PEER_SLOW_MS = 1.0
 PEER_MIN_TRIES = 3                      # judge the round trip only from this many samples on
+PEER_BURST = 5                          # back-to-back connects per sample; the fastest one is kept
 
 # ethtool -S counters on each fabric port.
 PHY_FAIL = ("rx_crc_errors_phy", "rx_pcs_symbol_err_phy", "rx_symbol_err_phy", "tx_errors_phy")
@@ -172,16 +173,23 @@ def _probe(src: str, dst: str, port: int) -> float | None:
 
     The agent may not open raw sockets, so it cannot ping. A TCP handshake
     crosses the same link, and a refusal is a reply too: only silence is loss.
+    One lone connect mostly times the CPUs waking from deep idle (about 0.4 ms
+    per idle box, checks-latency-20261031), so take the fastest of a burst:
+    the first connects wake both ends, the later ones time the link.
     """
-    t = time.monotonic()
-    try:
-        with socket.create_connection((dst, port), timeout=1, source_address=(src, 0)):
+    best = None
+    for _ in range(PEER_BURST):
+        t = time.monotonic()
+        try:
+            with socket.create_connection((dst, port), timeout=1, source_address=(src, 0)):
+                pass
+        except ConnectionRefusedError:
             pass
-    except ConnectionRefusedError:
-        pass
-    except OSError:
-        return None
-    return (time.monotonic() - t) * 1000
+        except OSError:
+            return None
+        ms = (time.monotonic() - t) * 1000
+        best = ms if best is None else min(best, ms)
+    return best
 
 
 def _peers(links: list, view: dict) -> list[dict]:
