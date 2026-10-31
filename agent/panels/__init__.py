@@ -31,7 +31,7 @@ import importlib
 
 from . import common
 
-ORDER = ["cluster", "health", "log", "cables", "power"]
+ORDER = ["fleet", "box", "health", "log", "cables", "power", "cluster"]
 PANELS = [importlib.import_module(f"{__name__}.{name}") for name in ORDER]
 # How often each panel's sample() runs.
 SAMPLE_S = 10.0

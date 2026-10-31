@@ -5,7 +5,7 @@ page that only one node can serve.
 """
 from .common import DASH, esc, node_of
 
-PATH, TITLE = "/", "Cluster"
+PATH, TITLE = "/cluster", "Cluster"
 REFRESH_S = 10
 
 
