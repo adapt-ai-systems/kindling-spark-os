@@ -666,52 +666,6 @@ def sample_load(name: str, url: str):
         _load_err.pop(name, None)
 
 
-TOOLS = {
-    "meminfo": (t_meminfo, "Raw /proc/meminfo.", {}),
-    "gpu": (t_gpu, "nvidia-smi output. Pick a view with args: '' for the "
-            "default table, 'query' for a csv of utilisation/clocks/temp/power, "
-            "'apps' for per-pid GPU memory, 'topo' for the topology matrix, "
-            "'clocks' for clock and performance detail. On GB10 --query-gpu "
-            "reports N/A for memory while 'apps' still answers.",
-            {"args": {"type": "string"}}),
-    "processes": (t_processes, "Raw ps, sorted by RSS. GPU allocations do not "
-                  "appear here.", {}),
-    "network": (t_network, "Raw ip addr, ip link and rdma link output.", {}),
-    "rdma_counters": (t_rdma_counters, "Every RoCE counter for a port, raw. "
-                      "Rates need two reads: these are lifetime totals.",
-                      {"device": {"type": "string"}}),
-    "pci": (t_pci, "Raw lspci -nnk, including the bound driver.", {}),
-    "usb": (t_usb, "Raw lsusb -t.", {}),
-    "docker_ps": (t_docker_ps, "Raw docker ps -a.", {}),
-    "systemd_units": (t_systemd, "Running systemd services.", {}),
-    "list_logs": (t_list_logs, "Files in the log directory with size and mtime.", {}),
-    "read_log": (t_read_log, "Tail of one log file, optionally filtered by a "
-                 "regex. Capped at 64 KB.",
-                 {"file": {"type": "string"}, "lines": {"type": "integer"},
-                  "grep": {"type": "string"}}),
-    "memory_accounting": (t_memory_accounting, "Host memory by owner, "
-                          "reconciled against MemTotal. Needs /proc/meminfo, "
-                          "per-process RSS and the GPU's per-pid figure "
-                          "together, which is why it is not raw meminfo.", {}),
-    "engine_stacks": (t_engine_stacks, "Python stacks of the engine processes, "
-                      "sampled over several rounds. A frame that stays put is "
-                      "the kernel running; one that moves is queue "
-                      "backpressure, since an async CUDA launch blocks on "
-                      "whatever it tries to launch next. Reads container "
-                      "processes through the host's /proc.",
-                      {"rounds": {"type": "integer"},
-                       "gap_s": {"type": "number"}}),
-    "models": (t_models, "mentat's table of every group, model and node, read "
-               "from the mesh head, with the token load this agent scraped "
-               "from each engine.", {}),
-    "power_cap": (t_power_cap, "This node's GPU clock, load, draw and clock cap. "
-                  "With mhz: set the cap (0 clears it); GB10 has no power limit, "
-                  "so the SM clock cap is the power cap. Persists across reboots.",
-                  {"mhz": {"type": "integer"}}),
-}
-
-
-
 
 # --- GPU power: a clock cap ------------------------------------------------
 # GB10 has no power limit: nvidia-smi reports every limit as N/A. The box's
@@ -841,6 +795,52 @@ placeholder="none"> MHz (max {mx})</label>
 <p class=dim>per-node figures from each node's agent &middot; <a href="/" style="color:#9ad">cluster</a>
 &middot; <a href="/status.json" style="color:#9ad">status.json</a></p>"""
     return html.encode()
+
+TOOLS = {
+    "meminfo": (t_meminfo, "Raw /proc/meminfo.", {}),
+    "gpu": (t_gpu, "nvidia-smi output. Pick a view with args: '' for the "
+            "default table, 'query' for a csv of utilisation/clocks/temp/power, "
+            "'apps' for per-pid GPU memory, 'topo' for the topology matrix, "
+            "'clocks' for clock and performance detail. On GB10 --query-gpu "
+            "reports N/A for memory while 'apps' still answers.",
+            {"args": {"type": "string"}}),
+    "processes": (t_processes, "Raw ps, sorted by RSS. GPU allocations do not "
+                  "appear here.", {}),
+    "network": (t_network, "Raw ip addr, ip link and rdma link output.", {}),
+    "rdma_counters": (t_rdma_counters, "Every RoCE counter for a port, raw. "
+                      "Rates need two reads: these are lifetime totals.",
+                      {"device": {"type": "string"}}),
+    "pci": (t_pci, "Raw lspci -nnk, including the bound driver.", {}),
+    "usb": (t_usb, "Raw lsusb -t.", {}),
+    "docker_ps": (t_docker_ps, "Raw docker ps -a.", {}),
+    "systemd_units": (t_systemd, "Running systemd services.", {}),
+    "list_logs": (t_list_logs, "Files in the log directory with size and mtime.", {}),
+    "read_log": (t_read_log, "Tail of one log file, optionally filtered by a "
+                 "regex. Capped at 64 KB.",
+                 {"file": {"type": "string"}, "lines": {"type": "integer"},
+                  "grep": {"type": "string"}}),
+    "memory_accounting": (t_memory_accounting, "Host memory by owner, "
+                          "reconciled against MemTotal. Needs /proc/meminfo, "
+                          "per-process RSS and the GPU's per-pid figure "
+                          "together, which is why it is not raw meminfo.", {}),
+    "engine_stacks": (t_engine_stacks, "Python stacks of the engine processes, "
+                      "sampled over several rounds. A frame that stays put is "
+                      "the kernel running; one that moves is queue "
+                      "backpressure, since an async CUDA launch blocks on "
+                      "whatever it tries to launch next. Reads container "
+                      "processes through the host's /proc.",
+                      {"rounds": {"type": "integer"},
+                       "gap_s": {"type": "number"}}),
+    "models": (t_models, "mentat's table of every group, model and node, read "
+               "from the mesh head, with the token load this agent scraped "
+               "from each engine.", {}),
+    "power_cap": (t_power_cap, "This node's GPU clock, load, draw and clock cap. "
+                  "With mhz: set the cap (0 clears it); GB10 has no power limit, "
+                  "so the SM clock cap is the power cap. Persists across reboots.",
+                  {"mhz": {"type": "integer"}}),
+}
+
+
 
 
 # --- cluster page -----------------------------------------------------------
