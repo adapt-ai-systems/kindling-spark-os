@@ -7,7 +7,7 @@ so a box that cannot reach another still shows what that box says of itself.
 import json
 import time
 
-from . import checks
+from . import checks, log
 from .common import boxes, esc, mk
 
 PATH, TITLE = "/health", "Health"
@@ -18,7 +18,11 @@ STALE_S = 60                            # results older than this mean the sampl
 COLUMNS = [("UP", "agent answers")] + [(label, about) for label, _, about in checks.CHECKS]
 WORST = {"fail": 3, "warn": 2, "ok": 1, "na": 0}
 
+HOLD = 2                                # samples a new state must last before the Log records it
+
 _last_view: dict = {}
+_logged: dict | None = None             # label -> the state last recorded in the Log
+_held: dict = {}                        # label -> (new state, samples seen in it)
 
 
 def sample(view: dict) -> dict:
@@ -32,8 +36,31 @@ def sample(view: dict) -> dict:
         except Exception as e:
             state, text = "fail", f"the check broke: {type(e).__name__}: {e}"
         results.append([label, state, text])
+    _log_changes(results)
     fabric = [{"netdev": link["netdev"], "addr": a} for link in facts["links"] for a in link["addrs"]]
     return {"at": facts["now"], "fabric": fabric, "checks": results}
+
+
+def _log_changes(results: list):
+    """Record each check that changed state in the Log, once the new state
+    has lasted HOLD samples, so a check that flickers does not fill it. After
+    a restart the last states come from the Log, so a lasting fault is not
+    recorded twice."""
+    global _logged
+    if _logged is None:
+        _logged = {r["src"]: r["state"] for r in log.read() if r.get("kind") == "check"}
+    for label, state, text in results:
+        if state == "na" or state == _logged.get(label, "ok"):
+            _held.pop(label, None)
+            continue
+        was, n = _held.get(label, (state, 0))
+        n = n + 1 if was == state else 1
+        _held[label] = (state, n)
+        if n >= HOLD:
+            _logged[label] = state
+            _held.pop(label)
+            log.event(f"{'Back to ok' if state == 'ok' else state.capitalize()}: {text}",
+                      label, state, "check")
 
 
 def results(box: dict) -> list:

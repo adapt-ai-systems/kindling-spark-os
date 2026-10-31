@@ -3,9 +3,7 @@
 Every daemon holds the same cluster, so any node can draw it and there is no
 page that only one node can serve.
 """
-import urllib.parse
-
-from .common import DASH, esc
+from .common import DASH, esc, node_of
 
 PATH, TITLE = "/", "Cluster"
 REFRESH_S = 10
@@ -27,22 +25,12 @@ def page(view: dict, msg: str = "") -> str:
     loads, load_errs = view["load"], view["load_err"]
     nodes = [n for n in view["nodes"].values() if "connected" in n]
 
-    # An engine URL names an address. Map each address back to the node that
-    # holds it, so the models table can say where a model runs.
-    by_ip: dict[str, str] = {}
-    for n in nodes:
-        name = (n.get("agent") or {}).get("node") or n["ip"]
-        for a in n["addrs"]:
-            by_ip[a] = name
-
-    def node_of(url: str | None) -> str:
-        host = urllib.parse.urlsplit(url or "").hostname or ""
-        return by_ip.get(host, host or "?")
+    where = node_of(view)
 
     served: dict[str, int] = {}
     for g in groups.values():
         if g.get("openai"):
-            n = node_of(g["openai"])
+            n = where(g["openai"])
             served[n] = served.get(n, 0) + 1
 
     rows = []
@@ -86,7 +74,7 @@ def page(view: dict, msg: str = "") -> str:
         state = ("healthy" if healthy else
                  f"<span class=c-bad>{esc(why_not or 'not read yet')}</span>")
         models.append(f"<tr><td class=n>{esc(', '.join(g.get('models') or [name]))}</td>"
-                      f"<td>{esc(name)}</td><td>{esc(node_of(g['openai']))}</td>"
+                      f"<td>{esc(name)}</td><td>{esc(where(g['openai']))}</td>"
                       f"<td>{state}</td><td>{tps}</td><td>{q}</td><td>{kv}</td>"
                       f"<td class='dim hx'>{esc(g['openai'])}</td></tr>")
 

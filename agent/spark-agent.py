@@ -30,7 +30,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import panels
-from panels.common import HOSTNAME, read_file, run
+from panels.common import HOSTNAME, get_json, read_file, run
 
 
 class Server(ThreadingHTTPServer):
@@ -486,8 +486,7 @@ def register_loop():
 
 
 def _get_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_S) as r:
-        return json.loads(r.read().decode())
+    return get_json(url, FETCH_TIMEOUT_S)
 
 
 # The last complete read of the cluster: mentat's table and what each node's
@@ -599,14 +598,15 @@ def read_nodes(daemons: dict) -> dict[str, dict]:
     return out
 
 
-def view() -> dict:
+def view(query: str = "") -> dict:
     """Everything a panel draws from: see panels/__init__.py."""
     snap = cluster_snapshot()
     with _load_lock:
         load, load_err = dict(_load), dict(_load_err)
     return {"host": HOSTNAME, "port": LISTEN_PORT, "router": MENTAT_ROUTER_URL,
             "mentat": snap["mentat"], "mentat_error": snap["mentat_error"],
-            "nodes": snap["nodes"], "load": load, "load_err": load_err}
+            "nodes": snap["nodes"], "load": load, "load_err": load_err,
+            "query": urllib.parse.parse_qs(query)}
 
 
 # Each panel's last sample() of this node, by panel name, served in
@@ -827,10 +827,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self._deny_source():
             return
-        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        path, _, query = self.path.partition("?")
+        path = path.rstrip("/") or "/"
         panel = panels.by_path(path)
         if panel:
-            self._send(200, panels.render(panel, view()), "text/html; charset=utf-8")
+            self._send(200, panels.render(panel, view(query)), "text/html; charset=utf-8")
+            return
+        panel = panels.data_path(path)
+        if panel:
+            self._send(200, json.dumps(panel.data(view(query))).encode(), "application/json")
             return
         if path in ("/healthz", "/status.json"):
             # Peer agents read this for the node table, so it carries this

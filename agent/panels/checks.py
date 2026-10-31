@@ -21,7 +21,7 @@ import statistics
 import time
 
 from . import power
-from .common import read_file, run
+from .common import meminfo, run
 
 WINDOW_S = 900
 DISK_WARN, DISK_FAIL = 85, 95           # % used
@@ -221,8 +221,7 @@ def read(view: dict) -> dict:
             _phy_growth.feed(now, (link["netdev"], k), v)
         for k, v in _ib_counters(link["rdma"]).items():
             _ib_growth.feed(now, (link["rdma"], k), v)
-    mem = {k: int(v.split()[0]) for k, _, v in
-           (line.partition(":") for line in read_file("/proc/meminfo").splitlines()) if v.strip()}
+    mem = meminfo()
     routes = sorted(_json(["ip", "-j", "-4", "route", "show", "default"]) or [],
                     key=lambda r: r.get("metric", 0))
     return {"now": now, "gpu": power.sample(), "reasons": _reasons(), "links": links,

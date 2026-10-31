@@ -10,6 +10,7 @@ import json
 import os
 import time
 
+from . import log
 from .common import DASH, boxes, esc, run
 
 PATH, TITLE = "/power", "Power"
@@ -50,9 +51,22 @@ def sample(view=None) -> dict:
     return out
 
 
-def set_cap(mhz: int) -> dict:
-    """Write the wanted cap (0 clears it) and wait briefly for the root unit."""
-    mhz = int(mhz)
+def set_cap(mhz: int, by: str) -> dict:
+    """Write the wanted cap (0 clears it), wait briefly for the root unit, and
+    record both the command and its outcome in the Log."""
+    p = _set_cap(int(mhz))
+    log.event(f"cap {mhz or 'clear'}", by, "you", "cmd")
+    if p.get("apply_error"):
+        log.event(f"Cap {mhz} MHz did not apply: {p['apply_error']}", "cap", "fail", "cap")
+    elif not p.get("applied"):
+        log.event(f"Cap {mhz} MHz written; sparkos-gpucap has not applied it yet.", "cap", "warn", "cap")
+    else:
+        clock = f" The clock reads {p['sm_mhz']:.0f} MHz." if isinstance(p.get("sm_mhz"), float) else ""
+        log.event((f"Cap {mhz} MHz applied." if mhz else "Cap cleared.") + clock, "cap", "on", "cap")
+    return p
+
+
+def _set_cap(mhz: int) -> dict:
     if mhz < 0:
         raise ValueError("cap must be 0 (clear) or a positive MHz figure")
     mx = sample().get("max_mhz")
@@ -77,7 +91,7 @@ def set_cap(mhz: int) -> dict:
 def post(form: dict) -> str:
     want = 0 if form.get("clear") else int((form.get("cap") or ["0"])[0] or 0)
     try:
-        set_cap(want)
+        set_cap(want, "page")
     except (ValueError, OSError) as e:
         return str(e)
     return ""
@@ -87,7 +101,7 @@ def t_power_cap(mhz: int = -1, **_):
     if mhz is None or int(mhz) < 0:
         return json.dumps(sample(), indent=2)
     try:
-        return json.dumps(set_cap(int(mhz)), indent=2)
+        return json.dumps(set_cap(int(mhz), "mcp"), indent=2)
     except (ValueError, OSError) as e:
         return json.dumps({"error": str(e), **sample()}, indent=2)
 
@@ -131,6 +145,15 @@ def _row(b: dict, port: int) -> str:
             f"<td class=r>{_cap_cell(p)}</td></tr>")
 
 
+def cap_form(action: str, cap: int, mx: int, label: str = "cap this node") -> str:
+    """The set and clear form. Its action may be another box's /power."""
+    return f"""<form class=cap method=post action="{esc(action)}">
+<label for=cap>{esc(label)}</label><input id=cap type=number name=cap min=100 max={mx} step=1
+value="{cap or ''}" placeholder="none"><label>MHz, max {mx}</label>
+<button type=submit class=p>Set cap</button><button type=submit name=clear value=1>Clear</button>
+</form>"""
+
+
 def page(view: dict, msg: str = "") -> str:
     me = sample()
     mx = int(me.get("max_mhz") or 3000)
@@ -147,11 +170,7 @@ so a cap that did not take shows.</p>{note}
 <div><b>{_fmt(me, 'temp_c')}&deg;</b><small>temp</small></div>
 <div><b>{cap or 'none'}</b><small>cap</small></div>
 </div>
-<form class=cap method=post action="/power">
-<label for=cap>cap this node</label><input id=cap type=number name=cap min=100 max={mx} step=1
-value="{cap or ''}" placeholder="none"><label>MHz, max {mx}</label>
-<button type=submit class=p>Set cap</button><button type=submit name=clear value=1>Clear</button>
-</form>
+{cap_form("/power", cap, mx)}
 <div class=scroll><table class=tb><tr><th>Box</th><th>SM clock / max</th><th>Util</th>
 <th class=r>Draw</th><th class=r>Temp</th><th class=r>Cap</th></tr>
 {rows or '<tr><td colspan=6 class=dim>no boxes known</td></tr>'}</table></div>"""

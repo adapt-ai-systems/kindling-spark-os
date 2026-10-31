@@ -1,10 +1,13 @@
-"""What the agent and its panels share: running commands, reading files, and
-the page shell every tab is drawn in."""
+"""What the agent and its panels share: running commands, reading files,
+asking another agent, and the page shell every tab is drawn in."""
+import json
 import os
 import shutil
 import socket
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 
 HOSTNAME = socket.gethostname()
 CSS = open(os.path.join(os.path.dirname(__file__), "style.css")).read()
@@ -32,6 +35,33 @@ def read_file(path: str) -> str:
         return f"({path}: {type(e).__name__}: {e})"
 
 
+def meminfo() -> dict:
+    """/proc/meminfo in kB, by field."""
+    return {k: int(v.split()[0]) for k, _, v in
+            (line.partition(":") for line in read_file("/proc/meminfo").splitlines()) if v.strip()}
+
+
+def uptime() -> float:
+    try:
+        return float(read_file("/proc/uptime").split()[0])
+    except (IndexError, ValueError):
+        return 0.0
+
+
+def image() -> str:
+    """The Spark OS image this box booted, or "" off Spark OS."""
+    try:
+        with open("/etc/spark-os-version") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def get_json(url: str, timeout: float = 2.0) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
 def esc(v) -> str:
     return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
@@ -40,6 +70,35 @@ def esc(v) -> str:
 def mk(state: str = "") -> str:
     """The small square that marks a box's state: gray, lime, amber or red."""
     return f"<i class=\"mk {state}\"></i>"
+
+
+# A reading's place in its range, cold to hot. A rail or number takes the
+# colour of where it sits, so a box that runs hot stands out without a threshold.
+RAMP = [(0, (0x4f, 0x5a, 0x78)), (.25, (0x7a, 0xc5, 0xed)), (.5, (0xb9, 0xf3, 0x8c)),
+        (.75, (0xe9, 0xc4, 0x6a)), (1, (0xff, 0x5d, 0x73))]
+
+
+def ramp(v: float, lo: float, hi: float) -> str:
+    x = max(0.0, min(1.0, (v - lo) / ((hi - lo) or 1)))
+    for (a, ca), (b, cb) in zip(RAMP, RAMP[1:]):
+        if x <= b:
+            f = (x - a) / (b - a)
+            return "#%02x%02x%02x" % tuple(round(ca[k] + (cb[k] - ca[k]) * f) for k in range(3))
+    return "#ff5d73"
+
+
+def node_of(view: dict):
+    """A function from an engine URL to the name of the node that serves it."""
+    by_ip: dict[str, str] = {}
+    for n in view["nodes"].values():
+        name = (n.get("agent") or {}).get("node") or n["ip"]
+        for a in n.get("addrs") or [n["ip"]]:
+            by_ip.setdefault(a, name)
+
+    def of(url: str | None) -> str:
+        host = urllib.parse.urlsplit(url or "").hostname or ""
+        return by_ip.get(host, host or "?")
+    return of
 
 
 def boxes(view: dict) -> list[dict]:

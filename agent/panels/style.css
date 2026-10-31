@@ -98,3 +98,19 @@ svg.cm{display:block;width:100%;max-width:720px;margin:0 auto}
 .cm line.fail{stroke:var(--red);stroke-dasharray:4 4;animation:alarm 1s ease-in-out infinite}
 .cm rect{fill:var(--raise);stroke:var(--line2)}.cm rect.sw{stroke:var(--okm)}
 .cm text{font:11px var(--mono);fill:var(--ink);text-anchor:middle}
+
+/* log */
+.lg{max-height:72vh;overflow-y:auto}
+.lg .ln{display:grid;grid-template-columns:70px 1fr;gap:14px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.lg .tm{font:10.5px var(--mono);color:var(--mute);padding-top:1px;white-space:nowrap}
+.lg .src{font:10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--mute);display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.lg .tx{color:var(--ink2);font-size:13.5px}
+.lg .ln.cmd .tx{font:12.5px var(--mono);color:var(--ink)}
+.lg .ln.cmd .tx:before{content:"› ";color:var(--mute)}
+.lg .more{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);font:10.5px var(--mono);color:var(--mute)}
+.lg .more b{font-weight:400;color:var(--lime)}
+.lg .more span{margin-left:auto}
+.lg .day{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:12px;padding:9px 16px;background:var(--raise);border-bottom:1px solid var(--line);font:500 9.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink2)}
+.lg .day span{margin-left:auto;color:var(--mute);letter-spacing:.06em;text-transform:none;font-weight:400}
+
+@media(max-width:700px){.lg .ln{grid-template-columns:56px 1fr;gap:10px}}

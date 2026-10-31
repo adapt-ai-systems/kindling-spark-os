@@ -1,8 +1,9 @@
 # The spark agent (agent/ in kindling-spark-os): node status page and MCP tools on :8090,
 # registered with the local mentatd as group agent-<hostname>.
 #
-# It observes and never changes the host, except one file: the GPU clock cap under
-# /etc/spark/gpucap, which the root unit sparkos-gpucap applies. CAP_SYS_PTRACE is the one capability it holds, so py-spy
+# It observes and never changes the host, except two things: the GPU clock cap under
+# /etc/spark/gpucap, which the root unit sparkos-gpucap applies, and its event log on the
+# DGX OS disk (the Log page). CAP_SYS_PTRACE is the one capability it holds, so py-spy
 # can read an engine's Python stacks in any container. Everything it cannot read directly comes from
 # the files spark-log-snapshot.sh writes under /var/log/spark.
 #
@@ -25,6 +26,9 @@ Environment=SPARK_MEMORY_PY=/usr/local/bin/spark-memory.py
 # /etc/spark is copied from the DGX OS disk at boot and comes back owned by root; the agent
 # must still be able to write the cap, so the directory is handed to it before it starts.
 ExecStartPre=+/usr/bin/install -d -o spark-agent -g spark-agent -m 755 /etc/spark/gpucap
+# The Log's events go on the DGX OS disk, because / is RAM. Off Spark OS there is no such
+# disk and the Log says it cannot save.
+ExecStartPre=-+/usr/bin/install -d -o spark-agent -g spark-agent -m 755 /run/sparkos/host/var/lib/spark-agent
 ExecStart=/usr/bin/python3 /opt/spark-agent/spark-agent.py --port 8090
 Restart=always
 RestartSec=5
@@ -33,8 +37,8 @@ AmbientCapabilities=CAP_SYS_PTRACE
 CapabilityBoundingSet=CAP_SYS_PTRACE
 NoNewPrivileges=yes
 ProtectSystem=strict
-# The one thing it writes: the GPU clock cap for sparkos-gpucap (see /power).
-ReadWritePaths=/etc/spark/gpucap
+# What it writes: the GPU clock cap for sparkos-gpucap (see /power), and the Log (see /log).
+ReadWritePaths=/etc/spark/gpucap -/run/sparkos/host/var/lib/spark-agent
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
