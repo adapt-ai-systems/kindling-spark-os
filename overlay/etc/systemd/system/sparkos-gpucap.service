@@ -1,0 +1,9 @@
+# Applies /etc/spark/gpucap/mhz (a GPU SM clock cap, the box's power cap) at boot and on change.
+[Unit]
+Description=Spark GPU clock cap
+After=nvidia-persistenced.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sparkos-gpucap
+[Install]
+WantedBy=multi-user.target

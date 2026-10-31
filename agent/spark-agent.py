@@ -704,9 +704,143 @@ TOOLS = {
     "models": (t_models, "mentat's table of every group, model and node, read "
                "from the mesh head, with the token load this agent scraped "
                "from each engine.", {}),
+    "power_cap": (t_power_cap, "This node's GPU clock, load, draw and clock cap. "
+                  "With mhz: set the cap (0 clears it); GB10 has no power limit, "
+                  "so the SM clock cap is the power cap. Persists across reboots.",
+                  {"mhz": {"type": "integer"}}),
 }
 
 
+
+
+# --- GPU power: a clock cap ------------------------------------------------
+# GB10 has no power limit: nvidia-smi reports every limit as N/A. The box's
+# power is held down by capping the SM clock instead. The agent only writes
+# the wanted cap to CAP_FILE; sparkos-gpucap (root, started by a .path unit)
+# applies it and leaves its result in CAP_STATUS. /etc/spark is copied from
+# the DGX OS disk at boot, so a cap persists.
+CAP_FILE = "/etc/spark/gpucap/mhz"
+CAP_STATUS = "/run/spark/gpucap.status"
+
+
+def read_power() -> dict:
+    """This node's live clock, load and the cap as wanted and as applied."""
+    out: dict = {"cap_mhz": 0, "applied": None}
+    q = run(["nvidia-smi", "--query-gpu=clocks.sm,clocks.max.sm,utilization.gpu,"
+             "power.draw,temperature.gpu", "--format=csv,noheader,nounits"], 10)
+    parts = [x.strip() for x in q.strip().splitlines()[-1].split(",")] if q.strip() else []
+    if len(parts) == 5 and not q.startswith("error"):
+        def num(v):
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        out.update(sm_mhz=num(parts[0]), max_mhz=num(parts[1]), util_pct=num(parts[2]),
+                   watts=num(parts[3]), temp_c=num(parts[4]))
+    else:
+        out["error"] = q.strip()[:200]
+    try:
+        with open(CAP_FILE) as f:
+            out["cap_mhz"] = int("".join(c for c in f.read() if c.isdigit()) or 0)
+    except OSError:
+        pass
+    try:
+        with open(CAP_STATUS) as f:
+            st = json.load(f)
+        out["applied"] = bool(st.get("applied")) and st.get("cap_mhz") == out["cap_mhz"]
+        out["applied_at"] = st.get("at")
+        if st.get("error"):
+            out["apply_error"] = st["error"]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def set_cap(mhz: int) -> dict:
+    """Write the wanted cap (0 clears it) and wait briefly for the root unit."""
+    mhz = int(mhz)
+    if mhz < 0:
+        raise ValueError("cap must be 0 (clear) or a positive MHz figure")
+    mx = read_power().get("max_mhz")
+    if mhz and mx and mhz > mx:
+        raise ValueError(f"cap {mhz} MHz is above this GPU's maximum {mx:.0f}")
+    if mhz and mhz < 100:
+        raise ValueError("cap below 100 MHz refused")
+    tmp = CAP_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(f"{mhz}\n")
+    os.replace(tmp, CAP_FILE)         # one inotify event for the .path unit
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        p = read_power()
+        if p.get("applied") is not None and p.get("applied_at") and p["cap_mhz"] == mhz:
+            if p["applied"] or p.get("apply_error"):
+                return p
+        time.sleep(0.3)
+    return read_power()
+
+
+def t_power_cap(mhz: int = -1, **_):
+    if mhz is None or int(mhz) < 0:
+        return json.dumps(read_power(), indent=2)
+    try:
+        return json.dumps(set_cap(int(mhz)), indent=2)
+    except (ValueError, OSError) as e:
+        return json.dumps({"error": str(e), **read_power()}, indent=2)
+
+
+def _power_row(name: str, ip: str, p: dict, self_node: bool) -> str:
+    link = f"<a href=\"http://{_esc(ip)}:{LISTEN_PORT}/power\" style=\"color:#9ad\">{_esc(name)}</a>"
+    if self_node:
+        link += " <span class=self>this node</span>"
+    if not p:
+        return f"<tr><td>{link}</td><td colspan=6 class=bad>no agent</td></tr>"
+    def f(k, fmt="{:.0f}"):
+        v = p.get(k)
+        return fmt.format(v) if isinstance(v, (int, float)) else _DIM_DASH
+    cap = p.get("cap_mhz") or 0
+    if cap:
+        state = ("<span class=ok>applied</span>" if p.get("applied") else
+                 f"<span class=bad>{_esc(p.get('apply_error') or 'not applied')}</span>")
+        capcell = f"{cap} MHz {state}"
+    else:
+        capcell = "<span class=dim>none</span>"
+    return (f"<tr><td>{link}</td><td>{f('sm_mhz')} / {f('max_mhz')}</td>"
+            f"<td>{f('util_pct')}%</td><td>{f('watts', '{:.1f}')} W</td>"
+            f"<td>{f('temp_c')} &deg;C</td><td>{capcell}</td></tr>")
+
+
+def power_page(msg: str = "") -> bytes:
+    snap = cluster_snapshot()
+    rows = []
+    for n in snap.get("nodes", {}).values():
+        agent = n.get("agent") or {}
+        name = agent.get("node") or n["ip"]
+        rows.append(_power_row(name, n["ip"], agent.get("power") or {}, name == HOSTNAME))
+    me = read_power()
+    note = f"<p class=bad>{_esc(msg)}</p>" if msg else ""
+    mx = int(me.get("max_mhz") or 3000)
+    html = f"""<!doctype html><meta charset=utf-8>
+<title>spark power</title><style>{_CSS}
+input[type=number]{{width:7rem;background:#222;color:#ddd;border:1px solid #444;padding:.2rem .4rem}}
+button{{background:#246;color:#ddd;border:1px solid #468;padding:.25rem .8rem;cursor:pointer}}</style>
+<h1>spark power &middot; seen from {_esc(HOSTNAME)}</h1>
+<p class=dim>GB10 has no power limit; the cap is the SM clock's maximum. A cap set here
+survives a reboot. The live clock sits next to the cap, so a cap that did not take shows.</p>
+{note}
+<h2>this node</h2>
+<form method=post action="/power">
+<label>cap <input type=number name=cap min=100 max={mx} step=1 value="{me.get('cap_mhz') or ''}"
+placeholder="none"> MHz (max {mx})</label>
+<button type=submit>set</button>
+<button type=submit name=clear value=1>clear cap</button>
+</form>
+<h2>fleet</h2>
+<table><tr><th>node</th><th>SM clock / max</th><th>util</th><th>draw</th><th>temp</th><th>cap</th></tr>
+{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</table>
+<p class=dim>per-node figures from each node's agent &middot; <a href="/" style="color:#9ad">cluster</a>
+&middot; <a href="/status.json" style="color:#9ad">status.json</a></p>"""
+    return html.encode()
 
 
 # --- cluster page -----------------------------------------------------------
@@ -930,6 +1064,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, cluster_page(), "text/html; charset=utf-8")
             return
+        if path == "/power":
+            self._send(200, power_page(), "text/html; charset=utf-8")
+            return
         if path in ("/healthz", "/status.json"):
             # Peer agents read this for the node table, so it carries this
             # node's interlink and driver figures.
@@ -938,6 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
                 "group": MENTAT_GROUP, "tools": sorted(TOOLS),
                 "interconnect": read_interconnect(),
                 "driver": read_driver_errors(),
+                "power": read_power(),
             }, indent=2).encode(), "application/json")
             return
         self._send(404, b"not found\n", "text/plain")
@@ -948,6 +1086,16 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/") or "/"
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
+        if path == "/power":
+            form = urllib.parse.parse_qs(raw.decode(errors="replace"))
+            want = 0 if form.get("clear") else int((form.get("cap") or ["0"])[0] or 0)
+            try:
+                set_cap(want)
+                msg = ""
+            except (ValueError, OSError) as e:
+                msg = str(e)
+            self._send(200, power_page(msg), "text/html; charset=utf-8")
+            return
         try:
             payload = json.loads(raw.decode() or "{}")
         except ValueError:

@@ -1,7 +1,8 @@
 # The spark agent (agent/ in kindling-spark-os): node status page and MCP tools on :8090,
 # registered with the local mentatd as group agent-<hostname>.
 #
-# It observes and never changes the host. CAP_SYS_PTRACE is the one capability it holds, so py-spy
+# It observes and never changes the host, except one file: the GPU clock cap under
+# /etc/spark/gpucap, which the root unit sparkos-gpucap applies. CAP_SYS_PTRACE is the one capability it holds, so py-spy
 # can read an engine's Python stacks in any container. Everything it cannot read directly comes from
 # the files spark-log-snapshot.sh writes under /var/log/spark.
 #
@@ -29,6 +30,8 @@ AmbientCapabilities=CAP_SYS_PTRACE
 CapabilityBoundingSet=CAP_SYS_PTRACE
 NoNewPrivileges=yes
 ProtectSystem=strict
+# The one thing it writes: the GPU clock cap for sparkos-gpucap (see /power).
+ReadWritePaths=/etc/spark/gpucap
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes

@@ -16,6 +16,7 @@ chmod 440 /etc/sudoers.d/90-admin-nopasswd
 # The spark agent runs as its own user. spark-agent.service grants it CAP_SYS_PTRACE and nothing
 # else.
 useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin spark-agent
+install -d -o spark-agent -g spark-agent -m 755 /etc/spark/gpucap
 
 # Persistent state stays on the box's own root disk, which the initramfs leaves at
 # /run/sparkos/host. /var/log too, so the journal survives a reboot instead of filling the RAM
@@ -38,7 +39,7 @@ echo "init_on_alloc=0 iommu.passthrough=0 earlycon=uart,mmio32,0x16A00000 consol
 systemctl set-default multi-user.target
 systemctl enable ssh NetworkManager docker containerd nvidia-persistenced systemd-resolved \
   systemd-timesyncd sparkos-mtu sparkos-users sparkos-swap sparkos-boot-ok spark-watchdog spark-dmesg-snapshot.timer sparkos-trial-revert.timer \
-  mentatd spark-agent dispramd spark-console lldpd sparkos-fabric-nm sparkos-fabric
+  mentatd spark-agent dispramd spark-console lldpd sparkos-fabric-nm sparkos-fabric sparkos-gpucap sparkos-gpucap.path
 # tty1 belongs to spark-console; the other consoles keep their gettys.
 systemctl mask getty@tty1.service autovt@tty1.service
 
