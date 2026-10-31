@@ -82,7 +82,7 @@ def shell(title: str, nav: list, active: str, alarms: list, body: str,
         strip += (f"<div class=ab><span class=lbl>Fail</span><span class=x>"
                   f"{len(alarms) - 3} more</span><a href=\"/health\">Open &rarr;</a></div>")
     meta = f"<meta http-equiv=refresh content={refresh_s}>" if refresh_s else ""
-    seen = time.strftime("%H:%M:%S", time.localtime())
+    seen = time.strftime("%H:%M:%S %Z", time.localtime())
     return f"""<!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">{meta}
 <title>{esc(title)} &middot; {esc(host)}</title><style>{CSS}</style>

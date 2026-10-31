@@ -106,7 +106,7 @@ def page(view: dict, msg: str = "") -> str:
     fail = f"<span class=c-bad>{count['fail']} fail</span>" if count["fail"] else "0 fail"
     legend = "".join(f"<span><i class=\"k {k}\"></i>{t}</span>" for k, t in
                      (("ok", "pass"), ("warn", "warn"), ("fail", "fail"), ("", "n/a")))
-    legend += "".join(f"<span>{esc(label)} {esc(text)}</span>" for label, text in COLUMNS)
+    legend += "".join(f"<span><b>{esc(label)}</b> {esc(text)}</span>" for label, text in COLUMNS)
     return f"""<div class=vh><h3>Health</h3><span>goal: all green &middot; {len(states)} checks &middot;
 {count['ok']} pass &middot; {warn} &middot; {fail}{na}</span></div>
 <div class="hm scroll"><table>{head}{matrix}</table></div>

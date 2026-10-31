@@ -67,6 +67,7 @@ table.tb{width:100%;border-collapse:collapse}
 .hm td.sc.full{color:var(--lime)}
 .foot{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);font:10.5px var(--mono);color:var(--mute)}
 .foot i.k{display:inline-block;width:10px;height:8px;border-radius:2px;margin-right:6px;vertical-align:0;background:var(--faint)}
+.foot b{font-weight:500;color:var(--ink2)}
 .foot i.k.ok{background:var(--pass)}.foot i.k.warn{background:var(--amber)}.foot i.k.fail{background:var(--red)}
 
 /* stats and forms */
