@@ -22,6 +22,9 @@ Environment=AGENT_LOG_DIR=/var/log/spark
 Environment=PYTHONPATH=/opt/spark-agent/lib
 Environment=PY_SPY=/opt/spark-agent/lib/bin/py-spy
 Environment=SPARK_MEMORY_PY=/usr/local/bin/spark-memory.py
+# /etc/spark is copied from the DGX OS disk at boot and comes back owned by root; the agent
+# must still be able to write the cap, so the directory is handed to it before it starts.
+ExecStartPre=+/usr/bin/install -d -o spark-agent -g spark-agent -m 755 /etc/spark/gpucap
 ExecStart=/usr/bin/python3 /opt/spark-agent/spark-agent.py --port 8090
 Restart=always
 RestartSec=5
