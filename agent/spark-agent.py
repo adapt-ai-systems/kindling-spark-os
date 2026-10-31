@@ -744,24 +744,30 @@ def t_power_cap(mhz: int = -1, **_):
 
 
 def _power_row(name: str, ip: str, p: dict, self_node: bool) -> str:
-    link = f"<a href=\"http://{_esc(ip)}:{LISTEN_PORT}/power\" style=\"color:#9ad\">{_esc(name)}</a>"
+    link = f"<a href=\"http://{_esc(ip)}:{LISTEN_PORT}/power\">{_esc(name)}</a>"
     if self_node:
-        link += " <span class=self>this node</span>"
+        link += "<span class=self>this node</span>"
     if not p:
-        return f"<tr><td>{link}</td><td colspan=6 class=bad>no agent</td></tr>"
+        return f"<tr><td>{link}</td><td colspan=5><span class=\"pill bad\">no agent</span></td></tr>"
     def f(k, fmt="{:.0f}"):
         v = p.get(k)
         return fmt.format(v) if isinstance(v, (int, float)) else _DIM_DASH
+    util = p.get("util_pct") if isinstance(p.get("util_pct"), (int, float)) else None
+    if util is None:
+        utilcell = _DIM_DASH
+    else:
+        utilcell = (f"<span class=\"bar{' hot' if util >= 90 else ''}\"><i style=\"width:{util:.0f}%\"></i></span>"
+                    f"{util:.0f}%")
     cap = p.get("cap_mhz") or 0
     if cap:
-        state = ("<span class=ok>applied</span>" if p.get("applied") else
-                 f"<span class=bad>{_esc(p.get('apply_error') or 'not applied')}</span>")
+        state = ("<span class=\"pill ok\">applied</span>" if p.get("applied") else
+                 f"<span class=\"pill bad\">{_esc(p.get('apply_error') or 'not applied')}</span>")
         capcell = f"{cap} MHz {state}"
     else:
-        capcell = "<span class=dim>none</span>"
-    return (f"<tr><td>{link}</td><td>{f('sm_mhz')} / {f('max_mhz')}</td>"
-            f"<td>{f('util_pct')}%</td><td>{f('watts', '{:.1f}')} W</td>"
-            f"<td>{f('temp_c')} &deg;C</td><td>{capcell}</td></tr>")
+        capcell = "<span class=\"pill dim\">none</span>"
+    return (f"<tr><td>{link}</td><td class=num>{f('sm_mhz')} <span class=dim>/ {f('max_mhz')}</span></td>"
+            f"<td class=num>{utilcell}</td><td class=num>{f('watts', '{:.1f}')} W</td>"
+            f"<td class=num>{f('temp_c')} &deg;C</td><td class=num>{capcell}</td></tr>")
 
 
 def power_page(msg: str = "") -> bytes:
@@ -772,28 +778,43 @@ def power_page(msg: str = "") -> bytes:
         name = agent.get("node") or n["ip"]
         rows.append(_power_row(name, n["ip"], agent.get("power") or {}, name == HOSTNAME))
     me = read_power()
-    note = f"<p class=bad>{_esc(msg)}</p>" if msg else ""
+    note = f"<div class=msg>{_esc(msg)}</div>" if msg else ""
     mx = int(me.get("max_mhz") or 3000)
-    html = f"""<!doctype html><meta charset=utf-8>
-<title>spark power</title><style>{_CSS}
-input[type=number]{{width:7rem;background:#222;color:#ddd;border:1px solid #444;padding:.2rem .4rem}}
-button{{background:#246;color:#ddd;border:1px solid #468;padding:.25rem .8rem;cursor:pointer}}</style>
-<h1>spark power &middot; seen from {_esc(HOSTNAME)}</h1>
-<p class=dim>GB10 has no power limit; the cap is the SM clock's maximum. A cap set here
-survives a reboot. The live clock sits next to the cap, so a cap that did not take shows.</p>
+    def num(k, fmt="{:.0f}", unit=""):
+        v = me.get(k)
+        return (fmt.format(v) + unit) if isinstance(v, (int, float)) else "-"
+    cap = me.get("cap_mhz") or 0
+    capnow = f"{cap} MHz" if cap else "none"
+    html = f"""<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>spark power</title><style>{_CSS}</style>
+<div class=wrap>
+<header class=top><h1>Spark power</h1><span class=from>seen from {_esc(HOSTNAME)}</span>
+<nav><a href="/">cluster</a><a href="/power" class=here>power</a><a href="/status.json">status.json</a></nav></header>
+<p class=lead>GB10 has no power limit, so the cap is the SM clock's maximum. A cap set here survives a reboot.
+The live clock sits next to the cap, so a cap that did not take shows.</p>
 {note}
 <h2>this node</h2>
-<form method=post action="/power">
-<label>cap <input type=number name=cap min=100 max={mx} step=1 value="{me.get('cap_mhz') or ''}"
-placeholder="none"> MHz (max {mx})</label>
-<button type=submit>set</button>
-<button type=submit name=clear value=1>clear cap</button>
+<div class=card>
+<div class=stats>
+<div class=stat><b>{num('sm_mhz')}</b><small>SM MHz of {mx}</small></div>
+<div class=stat><b>{num('util_pct', '{:.0f}', '%')}</b><small>util</small></div>
+<div class=stat><b>{num('watts', '{:.1f}', ' W')}</b><small>draw</small></div>
+<div class=stat><b>{num('temp_c', '{:.0f}', '&deg;')}</b><small>temp</small></div>
+<div class=stat><b>{capnow}</b><small>cap</small></div>
+</div>
+<form class=cap method=post action="/power">
+<label for=cap>cap</label><input id=cap type=number name=cap min=100 max={mx} step=1 value="{cap or ''}"
+placeholder="none"><label>MHz, max {mx}</label>
+<button type=submit>Set cap</button>
+<button type=submit name=clear value=1 class=ghost>Clear</button>
 </form>
+</div>
 <h2>fleet</h2>
-<table><tr><th>node</th><th>SM clock / max</th><th>util</th><th>draw</th><th>temp</th><th>cap</th></tr>
-{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</table>
-<p class=dim>per-node figures from each node's agent &middot; <a href="/" style="color:#9ad">cluster</a>
-&middot; <a href="/status.json" style="color:#9ad">status.json</a></p>"""
+<div class="card scroll"><table><thead><tr><th>node</th><th>SM clock / max</th><th>util</th><th>draw</th><th>temp</th><th>cap</th></tr></thead>
+<tbody>{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</tbody></table></div>
+<footer>per-node figures from each node's agent</footer>
+</div>"""
     return html.encode()
 
 TOOLS = {
@@ -846,13 +867,62 @@ TOOLS = {
 # --- cluster page -----------------------------------------------------------
 # Every daemon holds the same cluster, so any node can draw it and there is
 # no page that only one node can serve.
-_CSS = """body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-max-width:60rem;margin:2rem auto;padding:0 1rem;background:#111;color:#ddd}
-h1{font-size:1.2rem}h2{font-size:1rem;margin-top:2rem;color:#9ad}
-table{border-collapse:collapse;width:100%;margin:.5rem 0}
-th,td{text-align:left;padding:.3rem .6rem;border-bottom:1px solid #333}
-th{color:#888;font-weight:normal}.ok{color:#7c7}.bad{color:#e77}.dim{color:#777}
-.self{color:#fc6}"""
+_CSS = """:root{--bg:#04040c;--surface:#0a0b18;--surface2:#111225;--border:#1c1e38;--border2:#2e3156;
+--ink:#e9ebf8;--dim:#9ba1c6;--meta:#676e97;--accent:#5ee6ff;--ok:#59ffb5;--bad:#ff4d6b;--warn:#ffd166;
+--sans:-apple-system,"SF Pro Text",ui-sans-serif,system-ui,sans-serif;--mono:"SF Mono",ui-monospace,Menlo,monospace}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);
+background-image:radial-gradient(ellipse 80% 50% at 78% -10%,rgba(94,230,255,.07),transparent 60%)}
+.wrap{max-width:62rem;margin:0 auto;padding:1.6rem 1.2rem 3rem}
+header.top{display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap;margin-bottom:1.2rem}
+header.top h1{font-size:1.05rem;font-weight:600;letter-spacing:.02em;margin:0}
+header.top .from{color:var(--meta);font-size:.85rem}
+header.top nav{margin-left:auto;display:flex;gap:1rem;font-size:.85rem}
+header.top nav a{color:var(--dim);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:1px}
+header.top nav a:hover,header.top nav a.here{color:var(--accent);border-color:var(--accent)}
+h1{font-size:1.05rem;font-weight:600}h2{font-size:.72rem;font-weight:600;letter-spacing:.14em;
+text-transform:uppercase;color:var(--meta);margin:1.8rem 0 .6rem}
+p{margin:.4rem 0}.lead{color:var(--dim);font-size:.9rem;max-width:48rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem 1.1rem;
+box-shadow:0 8px 24px rgba(0,0,0,.35)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+th{color:var(--meta);font-weight:500;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase}
+tbody tr:hover td{background:rgba(94,230,255,.03)}
+td.num,.num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:.9rem}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--meta)}
+.self{display:inline-block;margin-left:.5rem;padding:.05rem .45rem;border:1px solid var(--border2);
+border-radius:999px;color:var(--dim);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase}
+.pill{display:inline-block;padding:.1rem .55rem;border-radius:999px;font-size:.78rem;border:1px solid}
+.pill.ok{border-color:rgba(89,255,181,.35);background:rgba(89,255,181,.08)}
+.pill.bad{border-color:rgba(255,77,107,.4);background:rgba(255,77,107,.1)}
+.pill.dim{border-color:var(--border);color:var(--meta)}
+.bar{position:relative;height:6px;width:5.5rem;background:var(--border);border-radius:3px;overflow:hidden;
+display:inline-block;vertical-align:middle;margin-right:.5rem}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px}
+.bar.hot i{background:var(--warn)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(7.5rem,1fr));gap:.8rem;margin:.2rem 0 1rem}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem}
+.stat b{display:block;font:600 1.25rem/1.2 var(--mono);font-variant-numeric:tabular-nums}
+.stat small{display:block;color:var(--meta);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;margin-top:.15rem}
+form.cap{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+form.cap label{color:var(--dim);font-size:.9rem}
+input[type=number]{width:7.5rem;background:var(--bg);color:var(--ink);border:1px solid var(--border2);
+border-radius:6px;padding:.4rem .6rem;font:600 .95rem var(--mono)}
+input[type=number]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(94,230,255,.15)}
+button{background:var(--accent);color:#04040c;border:0;border-radius:6px;padding:.45rem .95rem;
+font:600 .85rem var(--sans);cursor:pointer}
+button.ghost{background:transparent;color:var(--dim);border:1px solid var(--border2)}
+button.ghost:hover{color:var(--ink);border-color:var(--accent)}
+.msg{margin:.6rem 0 1rem;padding:.55rem .8rem;border-radius:8px;font-size:.9rem;
+border:1px solid rgba(255,77,107,.4);background:rgba(255,77,107,.08);color:var(--bad)}
+footer{margin-top:1.6rem;color:var(--meta);font-size:.8rem}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:38rem}.scroll td,.scroll th{white-space:nowrap}
+.scroll th:first-child,.scroll td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
+@media(max-width:640px){.wrap{padding:1rem .8rem 2rem}.card{padding:.8rem}th,td{padding:.5rem .5rem}
+.bar{width:3.2rem}header.top nav{margin-left:0;width:100%}}"""
 _DIM_DASH = "<span class=dim>-</span>"
 
 
@@ -948,24 +1018,27 @@ def cluster_page() -> bytes:
     err = snap.get("mentat_error")
     mentat_note = (f"<p class=bad>mentatd unreachable: {_esc(err)}</p>" if err else "")
     empty = "mentatd unreachable" if err else "none registered"
-    router = (f"&middot; routed by <a href=\"{_esc(MENTAT_ROUTER_URL)}/\" style=\"color:#9ad\">"
+    router = (f"&middot; routed by <a href=\"{_esc(MENTAT_ROUTER_URL)}/\">"
               f"{_esc(MENTAT_ROUTER_URL)}</a>\n" if MENTAT_ROUTER_URL else "")
     html = f"""<!doctype html><meta charset=utf-8>
 <meta http-equiv=refresh content=10>
 <title>spark cluster</title><style>{_CSS}</style>
-<h1>spark cluster &middot; seen from {_esc(HOSTNAME)}</h1>
+<div class=wrap>
+<header class=top><h1>Spark cluster</h1><span class=from>seen from {_esc(HOSTNAME)}</span>
+<nav><a href="/" class=here>cluster</a><a href="/power">power</a><a href="/status.json">status.json</a></nav></header>
 {mentat_note}
 <h2>nodes</h2>
-<table><tr><th>node</th><th>addresses</th><th>mentatd</th>
+<div class="card scroll"><table><tr><th>node</th><th>addresses</th><th>mentatd</th>
 <th>interlink tx/rx</th><th>driver faults</th><th>models</th></tr>
-{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</table>
+{''.join(rows) or '<tr><td colspan=6 class=dim>no daemons known</td></tr>'}</table></div>
 <h2>models</h2>
-<table><tr><th>model</th><th>group</th><th>node</th><th>state</th>
+<div class="card scroll"><table><tr><th>model</th><th>group</th><th>node</th><th>state</th>
 <th>tokens/s</th><th>run/wait</th><th>kv</th>
-<th>serving</th></tr>{''.join(models) or f'<tr><td colspan=8 class=dim>{empty}</td></tr>'}</table>
-<p class=dim>from this node's mentatd
+<th>serving</th></tr>{''.join(models) or f'<tr><td colspan=8 class=dim>{empty}</td></tr>'}</table></div>
+<footer>from this node's mentatd
 {router}&middot; refreshes every 10s
-&middot; <a href="/status.json" style="color:#9ad">status.json</a></p>"""
+&middot; <a href="/status.json">status.json</a></footer>
+</div>"""
     return html.encode()
 
 
