@@ -1,0 +1,7 @@
+[Unit]
+Description=Re-apply the GPU clock cap when /etc/spark/gpucap changes
+[Path]
+PathChanged=/etc/spark/gpucap
+Unit=sparkos-gpucap.service
+[Install]
+WantedBy=multi-user.target

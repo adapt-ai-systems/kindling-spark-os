@@ -1,0 +1,24 @@
+#!/bin/sh
+# Apply the box's GPU clock cap. GB10 exposes no power limit (nvidia-smi reports every limit as N/A),
+# so a cap on the SM clock is how a box's power is held down. The cap is one number, MHz, in
+# /etc/spark/gpucap/mhz, written by spark-agent's /power page (or by hand); absent or 0 = no cap.
+# /etc/spark is copied from the DGX OS disk at boot, so a cap set once comes back on every boot.
+# Runs at boot after the driver and whenever the file changes (sparkos-gpucap.path). nvidia-smi
+# accepts any number for -lgc without complaint, so the result is checked against the GPU's maximum.
+set -u
+F=/etc/spark/gpucap/mhz; S=/run/spark/gpucap.status
+mkdir -p /run/spark
+want=$(tr -dc 0-9 < "$F" 2>/dev/null || true); want=${want:-0}
+max=$(nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9)
+now=$(date -u +%FT%TZ)
+write() { printf '{"cap_mhz":%s,"applied":%s,"max_mhz":%s,"at":"%s","error":%s}\n' "$1" "$2" "${max:-null}" "$now" "$3" > "$S"; }
+if [ -z "$max" ]; then write "$want" false null '"no GPU answer from nvidia-smi"'; exit 0; fi
+if [ "$want" -gt 0 ]; then
+	if [ "$want" -gt "$max" ] || [ "$want" -lt 100 ]; then
+		write "$want" false "\"cap $want MHz outside 100..$max\""; exit 0
+	fi
+	out=$(nvidia-smi -lgc 0,"$want" 2>&1) && write "$want" true null || write "$want" false "\"$(echo "$out" | head -1 | tr -d '"')\""
+else
+	out=$(nvidia-smi -rgc 2>&1) && write 0 true null || write 0 false "\"$(echo "$out" | head -1 | tr -d '"')\""
+fi
+cat "$S"
