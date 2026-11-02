@@ -5,6 +5,7 @@ ports and their far ends, what the box serves, its clock cap with a form that
 sets it on that box, its recent events, and its image. Every part comes from
 the box's own /status.json and /log.json, so any node's page can open any box.
 """
+import glob
 import os
 import time
 
@@ -18,11 +19,57 @@ REFRESH_S = 30                          # long enough to type a cap
 RECENT = 8                              # events shown
 
 
+NAMES = {"acpitz": "Board", "nvme": "NVMe", "mlx5": "NIC", "mt7925_phy0": "Wi-Fi"}
+
+
+def _read(path: str):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _milli(v):
+    """A sysfs millidegree reading as degrees; None when absent or not a sane limit (NVMe sensors 1-2 report 65261 C)."""
+    return int(v) / 1000 if v and v.lstrip("-").isdigit() and int(v) < 200000 else None
+
+
+def temps() -> list:
+    """Every temperature sensor the box has, [name, degrees C, the limit the device itself reports or None]: the board's
+    ACPI thermal zones (critical trip point), and each hwmon chip other than acpitz (crit, else max): NVMe, the ConnectX
+    NIC, Wi-Fi. The GPU's own reading is in the power sample."""
+    out = []
+    base = "/sys/class/thermal"
+    for z in sorted(glob.glob(f"{base}/thermal_zone*"), key=lambda z: int(z.rsplit("e", 1)[1])):
+        c = _milli(_read(f"{z}/temp"))
+        crit = next((_milli(_read(t[:-5] + "_temp")) for t in sorted(glob.glob(f"{z}/trip_point_*_type"))
+                     if _read(t) == "critical"), None)
+        if c is not None:
+            out.append([f"Board zone {z.rsplit('e', 1)[1]}", c, crit])
+    for h in sorted(glob.glob("/sys/class/hwmon/hwmon*"), key=lambda h: int(h.rsplit("n", 1)[1])):
+        name = _read(f"{h}/name") or "?"
+        if name == "acpitz":
+            continue
+        for f in sorted(glob.glob(f"{h}/temp*_input")):
+            p = f[:-6]
+            c = _milli(_read(f))
+            if c is None:
+                continue
+            label = _read(f"{p}_label") or ""
+            dev = os.path.basename(os.path.realpath(f"{h}/device")) if name == "mlx5" else ""
+            out.append([" ".join(x for x in (NAMES.get(name, name), label if label != "asic" else "", dev) if x), c,
+                        _milli(_read(f"{p}_crit")) or _milli(_read(f"{p}_max"))])
+    return out
+
+
 def sample(view: dict) -> dict:
-    """What only this page and the Fleet rails need: image, boot, disk, memory."""
+    """What only this page and the Fleet rails need: image, boot, disk, memory, every temperature sensor."""
     mount, pct, tb = checks._disk()
     mem = meminfo()
-    return {"image": image(), "kernel": os.uname().release,
+    t = temps()
+    return {"temps": t, "board_c": max((c for n, c, _ in t if n.startswith("Board")), default=None),
+            "image": image(), "kernel": os.uname().release,
             "boot_at": time.time() - uptime(), "disk_mount": mount, "disk_pct": pct, "disk_tb": tb,
             "mem_avail_gib": mem.get("MemAvailable", 0) / 2**20,
             "mem_total_gib": mem.get("MemTotal", 0) / 2**20}
@@ -45,6 +92,16 @@ def _now(st: dict) -> str:
         if isinstance(v, (int, float)):
             out += f"<span style=\"color:{ramp(v, lo, hi)}\">{fmt.format(v)}</span>"
     return out
+
+
+def _temps(st: dict) -> str:
+    """GPU first, then every other sensor, each coloured against its own limit (20 C to the limit, else 20 to 90 C)."""
+    g = (st.get("power") or {}).get("temp_c")
+    rows = ([["GPU", g, None]] if isinstance(g, (int, float)) else []) + ((st.get("box") or {}).get("temps") or [])
+    if not rows:
+        return "<div class=dim>no reading</div>"
+    return "".join(f"<div><span>{esc(n)}</span><span><span class=num style=\"color:{ramp(c, 20, lim or 90)}\">{c:.0f}&deg;C</span>"
+                   f"{f' <small class=dim>limit {lim:.0f}&deg;</small>' if lim else ''}</span></div>" for n, c, lim in rows)
 
 
 def _checks(res: list) -> str:
@@ -145,5 +202,6 @@ def page(view: dict, msg: str = "") -> str:
 <div class=bk><div class=ch><span class=lbl>GPU clock cap</span>{capnote}</div>
 {power.cap_form(f"http://{box['ip']}:{port}/power", cap, mx, f"cap {box['name']}")}</div>
 <div class=bk><span class=lbl>Recent on {esc(box['name'])}<a href="/log">Log &rarr;</a></span><div class=ev>{ev}</div></div>
+<div class=bk><span class=lbl>Temperatures</span><div class=kv>{_temps(st)}</div></div>
 <div class=bk><span class=lbl>System</span><div class=kv>{_kv(system)}</div></div>
 </div></div></div></div>"""

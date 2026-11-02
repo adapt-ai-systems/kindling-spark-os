@@ -1,4 +1,4 @@
-"""Fleet: one rail per box for temperature, power, clock and disk. A box with
+"""Fleet: one rail per box for GPU and board temperature, power, clock and disk. A box with
 a failing check flashes red; tap a box to open it on the Box page.
 
 Each rail takes the colour of its reading's place in the range (common.ramp),
@@ -13,6 +13,7 @@ REFRESH_S = 10
 # label, the sample and key it reads, its format, its range. A range of None
 # runs to the GPU's own maximum clock.
 RAILS = [("Temp", "power", "temp_c", "{:.0f}&deg;C", (20, 90)),
+         ("Board", "box", "board_c", "{:.0f}&deg;C", (20, 105)),   # hottest ACPI zone; its critical trip is 104.8 C
          ("Power", "power", "watts", "{:.1f} W", (0, 100)),
          ("Clock", "power", "sm_mhz", "{:.0f}", None),
          ("Disk", "box", "disk_pct", "{:.0f}%", (0, 100))]
